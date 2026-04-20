@@ -1,0 +1,91 @@
+@baseUrl = http://localhost:4000/api
+@contentType = application/json
+
+###
+# Register Alice
+POST {{baseUrl}}/auth/register
+Content-Type: {{contentType}}
+
+{
+  "name": "Alice Sender",
+  "email": "alice@example.com",
+  "password": "secret123",
+  "publicKey": "alice-demo-public-key"
+}
+
+###
+# Register Bob
+POST {{baseUrl}}/auth/register
+Content-Type: {{contentType}}
+
+{
+  "name": "Bob Receiver",
+  "email": "bob@example.com",
+  "password": "secret123",
+  "publicKey": "bob-demo-public-key"
+}
+
+###
+# Login Alice
+# Copy the returned token into @aliceToken and Alice's id into @aliceUserId below.
+POST {{baseUrl}}/auth/login
+Content-Type: {{contentType}}
+
+{
+  "email": "alice@example.com",
+  "password": "secret123"
+}
+
+###
+# Login Bob
+# Copy the returned token into @bobToken and Bob's id into @bobUserId below.
+POST {{baseUrl}}/auth/login
+Content-Type: {{contentType}}
+
+{
+  "email": "bob@example.com",
+  "password": "secret123"
+}
+
+###
+# Paste values from the login responses here before running the next requests.
+@aliceToken = REPLACE_WITH_ALICE_TOKEN
+@aliceUserId = REPLACE_WITH_ALICE_USER_ID
+@bobToken = REPLACE_WITH_BOB_TOKEN
+@bobUserId = REPLACE_WITH_BOB_USER_ID
+
+###
+# Alice wallet
+GET {{baseUrl}}/wallet
+Authorization: Bearer {{aliceToken}}
+
+###
+# Bob wallet
+GET {{baseUrl}}/wallet
+Authorization: Bearer {{bobToken}}
+
+###
+# Alice sends Bob 250
+POST {{baseUrl}}/transactions
+Content-Type: {{contentType}}
+Authorization: Bearer {{aliceToken}}
+
+{
+  "receiverUserId": "{{bobUserId}}",
+  "amount": 250
+}
+
+###
+# Alice wallet after transfer
+GET {{baseUrl}}/wallet
+Authorization: Bearer {{aliceToken}}
+
+###
+# Bob wallet after transfer
+GET {{baseUrl}}/wallet
+Authorization: Bearer {{bobToken}}
+
+###
+# Alice transaction history
+GET {{baseUrl}}/transactions
+Authorization: Bearer {{aliceToken}}
