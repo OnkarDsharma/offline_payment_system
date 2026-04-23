@@ -3,9 +3,10 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
-import 'package:qr_flutter/qr_flutter.dart';
 
-import '../providers/prototype_wallet_provider.dart';
+import '../providers/auth_provider.dart';
+import '../providers/transactions_provider.dart';
+import '../providers/wallet_provider.dart';
 
 class SendScreen extends ConsumerStatefulWidget {
   const SendScreen({super.key});
@@ -16,7 +17,6 @@ class SendScreen extends ConsumerStatefulWidget {
 
 class _SendScreenState extends ConsumerState<SendScreen> {
   final _requestPayloadController = TextEditingController();
-  String? _confirmationPayload;
   bool _isSubmitting = false;
 
   @override
@@ -26,6 +26,14 @@ class _SendScreenState extends ConsumerState<SendScreen> {
   }
 
   Future<void> _processRequestPayload(String payload) async {
+    final session = ref.read(authSessionProvider);
+    if (session == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Wallet session is not ready yet.')),
+      );
+      return;
+    }
+
     if (payload.trim().isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Scan or paste a request QR payload.')),
@@ -38,25 +46,36 @@ class _SendScreenState extends ConsumerState<SendScreen> {
     });
 
     try {
-      final result = await ref
-          .read(prototypeWalletProvider.notifier)
-          .createOutgoingConfirmationFromRequest(requestPayload: payload);
+      final parsed = jsonDecode(payload) as Map<String, dynamic>;
+      final receiverUserId = (parsed['receiverUserId'] ?? '').toString();
+      final amount = (parsed['amount'] as num?)?.toDouble() ?? 0;
+
+      if (receiverUserId.isEmpty || amount <= 0) {
+        throw const FormatException('Invalid payment request payload.');
+      }
+
+      await ref.read(apiServiceProvider).createTransfer(
+            token: session.token,
+            receiverUserId: receiverUserId,
+            amount: amount,
+          );
+
+      ref.invalidate(walletBootstrapProvider);
+      ref.invalidate(transactionsBootstrapProvider);
+      await ref.read(walletBootstrapProvider.future);
+      await ref.read(transactionsBootstrapProvider.future);
 
       if (!mounted) {
         return;
       }
 
-      setState(() {
-        _confirmationPayload = result.confirmationPayload;
-      });
-
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(result.message)),
+        SnackBar(content: Text('Payment sent: Rs. ${amount.toStringAsFixed(2)}')),
       );
-    } catch (_) {
+    } catch (error) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Failed to process request payload.')),
+          SnackBar(content: Text('Failed to send payment: $error')),
         );
       }
     } finally {
@@ -70,8 +89,8 @@ class _SendScreenState extends ConsumerState<SendScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final state = ref.watch(prototypeWalletProvider);
-    final wallet = state.wallet;
+    final session = ref.watch(authSessionProvider);
+    final wallet = ref.watch(walletProvider);
 
     return Scaffold(
       appBar: AppBar(title: const Text('Send Payment')),
@@ -79,9 +98,11 @@ class _SendScreenState extends ConsumerState<SendScreen> {
         padding: const EdgeInsets.all(16),
         child: ListView(
           children: [
-            Text('Sender wallet: ${wallet.name}'),
+            Text('Sender: ${session?.name ?? 'Loading...'}'),
             const SizedBox(height: 4),
-            Text('Current balance: Rs. ${wallet.balance.toStringAsFixed(2)}'),
+            Text('User ID: ${session?.userId ?? 'not-ready'}'),
+            const SizedBox(height: 4),
+            Text('Online balance: Rs. ${wallet.onlineBalance.toStringAsFixed(2)}'),
             const SizedBox(height: 12),
             TextField(
               controller: _requestPayloadController,
@@ -112,29 +133,13 @@ class _SendScreenState extends ConsumerState<SendScreen> {
             FilledButton(
               onPressed:
                   _isSubmitting ? null : () => _processRequestPayload(_requestPayloadController.text),
-              child: Text(_isSubmitting ? 'Processing...' : 'Pay & Generate Confirmation QR'),
+              child: Text(_isSubmitting ? 'Processing...' : 'Pay Via Backend'),
             ),
             const SizedBox(height: 16),
             if (_requestPayloadController.text.trim().isNotEmpty) ...[
               const Text('Parsed Request Preview'),
               const SizedBox(height: 8),
               _RequestPreview(payload: _requestPayloadController.text),
-            ],
-            const SizedBox(height: 16),
-            if (_confirmationPayload != null) ...[
-              const Text('Show this confirmation QR to Phone A (receiver):'),
-              const SizedBox(height: 10),
-              Center(
-                child: QrImageView(
-                  data: _confirmationPayload!,
-                  size: 240,
-                ),
-              ),
-              const SizedBox(height: 10),
-              SelectableText(
-                const JsonEncoder.withIndent('  ').convert(jsonDecode(_confirmationPayload!)),
-                style: const TextStyle(fontSize: 12),
-              ),
             ],
           ],
         ),
@@ -152,9 +157,9 @@ class _RequestPreview extends StatelessWidget {
   Widget build(BuildContext context) {
     try {
       final parsed = jsonDecode(payload) as Map<String, dynamic>;
-      final receiver = (parsed['receiverWalletName'] ?? parsed['receiverWalletId'] ?? '').toString();
+      final receiver = (parsed['receiverUserId'] ?? '').toString();
       final amount = (parsed['amount'] ?? '').toString();
-      return Text('Receiver: $receiver\nAmount: Rs. $amount');
+      return Text('Receiver User ID: $receiver\nAmount: Rs. $amount');
     } catch (_) {
       return const Text('Unable to parse request payload yet.');
     }

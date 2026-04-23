@@ -14,6 +14,12 @@ const loginSchema = z.object({
   password: z.string().min(6),
 });
 
+const demoSessionSchema = z.object({
+  deviceId: z.string().min(3),
+  name: z.string().min(1),
+  publicKey: z.string().min(1),
+});
+
 const authService = new AuthService();
 
 const toClientMessage = (error: unknown, fallback: string) => {
@@ -30,6 +36,18 @@ const toClientMessage = (error: unknown, fallback: string) => {
 };
 
 export class AuthController {
+  async demoSession(req: Request, res: Response) {
+    try {
+      const payload = demoSessionSchema.parse(req.body);
+      const result = await authService.demoSession(payload);
+
+      return res.status(200).json(result);
+    } catch (error) {
+      const message = toClientMessage(error, 'Demo session failed');
+      return res.status(400).json({ message });
+    }
+  }
+
   async register(req: Request, res: Response) {
     try {
       const payload = registerSchema.parse(req.body);

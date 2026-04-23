@@ -2,18 +2,19 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../components/transaction_tile.dart';
-import '../providers/prototype_wallet_provider.dart';
+import '../providers/auth_provider.dart';
+import '../providers/transactions_provider.dart';
 
 class HistoryScreen extends ConsumerWidget {
   const HistoryScreen({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final state = ref.watch(prototypeWalletProvider);
-    final transactions = state.transactions;
+    final session = ref.watch(authSessionProvider);
+    final transactions = ref.watch(transactionsProvider);
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Prototype Transaction History')),
+      appBar: AppBar(title: const Text('Transaction History')),
       body: transactions.isEmpty
           ? const Center(child: Text('No transactions found.'))
           : ListView.separated(
@@ -22,7 +23,7 @@ class HistoryScreen extends ConsumerWidget {
               itemBuilder: (context, index) {
                 return TransactionTile(
                   transaction: transactions[index],
-                  currentUserId: transactions[index].fromUserId,
+                  currentUserId: session?.userId ?? '',
                 );
               },
             ),

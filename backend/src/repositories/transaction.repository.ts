@@ -10,13 +10,27 @@ export type TransactionRecord = {
   createdAt: string;
 };
 
+const toIsoTimestamp = (value: unknown) => {
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+
+  const asString = String(value);
+  const asDate = new Date(asString);
+  if (!Number.isNaN(asDate.getTime())) {
+    return asDate.toISOString();
+  }
+
+  return asString;
+};
+
 const mapTransactionRow = (row: Record<string, unknown>): TransactionRecord => ({
   id: String(row.id),
   senderUserId: String(row.sender_user_id),
   receiverUserId: String(row.receiver_user_id),
   amount: Number(row.amount),
   status: String(row.status),
-  createdAt: String(row.created_at),
+  createdAt: toIsoTimestamp(row.created_at),
 });
 
 export class TransactionRepository {
