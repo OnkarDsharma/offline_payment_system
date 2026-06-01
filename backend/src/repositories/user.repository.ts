@@ -2,17 +2,17 @@ import { pool } from '../db/pool';
 
 export type CreateUserInput = {
   name: string;
-  email: string;
+  phone: string;
   passwordHash: string;
-  publicKey: string;
+  publicKey?: string | null;
 };
 
 export type UserRow = {
   id: string;
   name: string;
-  email: string;
+  phone: string;
   passwordHash: string;
-  publicKey: string;
+  publicKey: string | null;
 };
 
 type PublicUserRow = Omit<UserRow, 'passwordHash'>;
@@ -20,27 +20,27 @@ type PublicUserRow = Omit<UserRow, 'passwordHash'>;
 const mapUserRow = (row: Record<string, unknown>): UserRow => ({
   id: String(row.id),
   name: String(row.name),
-  email: String(row.email),
+  phone: String(row.phone),
   passwordHash: String(row.password_hash),
-  publicKey: String(row.public_key),
+  publicKey: row.public_key ? String(row.public_key) : null,
 });
 
 const mapPublicUserRow = (row: Record<string, unknown>): PublicUserRow => ({
   id: String(row.id),
   name: String(row.name),
-  email: String(row.email),
-  publicKey: String(row.public_key),
+  phone: String(row.phone),
+  publicKey: row.public_key ? String(row.public_key) : null,
 });
 
 export class UserRepository {
-  async findByEmail(email: string): Promise<UserRow | null> {
+  async findByPhone(phone: string): Promise<UserRow | null> {
     const result = await pool.query(
       `
-        SELECT id, name, email, password_hash, public_key
+        SELECT id, name, phone, password_hash, public_key
         FROM users
-        WHERE email = $1
+        WHERE phone = $1
       `,
-      [email.toLowerCase()],
+      [phone],
     );
 
     if (result.rowCount === 0) {
@@ -53,7 +53,7 @@ export class UserRepository {
   async findById(id: string): Promise<PublicUserRow | null> {
     const result = await pool.query(
       `
-        SELECT id, name, email, public_key
+        SELECT id, name, phone, public_key
         FROM users
         WHERE id = $1
       `,
@@ -67,6 +67,24 @@ export class UserRepository {
     return mapPublicUserRow(result.rows[0]);
   }
 
+  async updatePublicKey(params: { userId: string; publicKey: string }) {
+    const result = await pool.query(
+      `
+        UPDATE users
+        SET public_key = $2
+        WHERE id = $1
+        RETURNING id, name, phone, public_key
+      `,
+      [params.userId, params.publicKey],
+    );
+
+    if (result.rowCount === 0) {
+      throw new Error('User not found');
+    }
+
+    return mapPublicUserRow(result.rows[0]);
+  }
+
   async createWithWallet(input: CreateUserInput) {
     const client = await pool.connect();
 
@@ -75,11 +93,11 @@ export class UserRepository {
 
       const userResult = await client.query(
         `
-          INSERT INTO users (name, email, password_hash, public_key)
+          INSERT INTO users (name, phone, password_hash, public_key)
           VALUES ($1, $2, $3, $4)
-          RETURNING id, name, email, public_key
+          RETURNING id, name, phone, public_key
         `,
-        [input.name, input.email.toLowerCase(), input.passwordHash, input.publicKey],
+        [input.name, input.phone, input.passwordHash, input.publicKey ?? null],
       );
 
       const user = mapPublicUserRow(userResult.rows[0]);

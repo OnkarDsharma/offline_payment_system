@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../models/transaction.dart';
+import '../utils/money.dart';
 
 class TransactionTile extends StatelessWidget {
   const TransactionTile({
@@ -12,15 +13,13 @@ class TransactionTile extends StatelessWidget {
   final WalletTransaction transaction;
   final String currentUserId;
 
-  Color _statusColor(TransactionStatus status) {
+  Color _statusColor(OfflineTransactionStatus status) {
     switch (status) {
-      case TransactionStatus.completed:
-      case TransactionStatus.confirmed:
+      case OfflineTransactionStatus.confirmed:
         return Colors.green;
-      case TransactionStatus.failed:
-      case TransactionStatus.rejected:
+      case OfflineTransactionStatus.rejected:
         return Colors.red;
-      case TransactionStatus.pendingSync:
+      case OfflineTransactionStatus.pendingSync:
         return Colors.orange;
     }
   }
@@ -31,15 +30,17 @@ class TransactionTile extends StatelessWidget {
 
     return ListTile(
       leading: CircleAvatar(
-        backgroundColor: isOutgoing ? Colors.red.shade100 : Colors.green.shade100,
+        backgroundColor:
+            isOutgoing ? Colors.red.shade100 : Colors.green.shade100,
         child: Icon(
           isOutgoing ? Icons.call_made : Icons.call_received,
           color: isOutgoing ? Colors.red : Colors.green,
         ),
       ),
-      title: Text('${isOutgoing ? 'Sent' : 'Received'} Rs. ${transaction.amount.toStringAsFixed(2)}'),
+      title: Text(
+          '${isOutgoing ? 'Sent' : 'Received'} ${formatPaise(transaction.amount)}'),
       subtitle: Text(
-        '${transaction.fromUserId.substring(0, 8)} -> ${transaction.toUserId.substring(0, 8)}',
+        '${transaction.fromUserId} -> ${transaction.toUserId}',
       ),
       trailing: Container(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
@@ -48,7 +49,11 @@ class TransactionTile extends StatelessWidget {
           borderRadius: BorderRadius.circular(999),
         ),
         child: Text(
-          transaction.status.name.toUpperCase(),
+          switch (transaction.status) {
+            OfflineTransactionStatus.pendingSync => 'PENDING_SYNC',
+            OfflineTransactionStatus.confirmed => 'CONFIRMED',
+            OfflineTransactionStatus.rejected => 'REJECTED',
+          },
           style: TextStyle(
             color: _statusColor(transaction.status),
             fontSize: 12,

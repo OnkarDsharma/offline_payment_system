@@ -1,72 +1,20 @@
 import { pool } from '../db/pool';
-import { createHmac, timingSafeEqual } from 'crypto';
+import { PoolClient } from 'pg';
+import { WalletBalances, OfflineTokenRecord } from '../models/types';
 import { env } from '../config/env';
-import {
-  MintOfflineTokensResult,
-  OfflineTokenRecord,
-  OfflineTokenStatus,
-  RedeemOfflineTokenPayload,
-  RedeemOfflineTokenResult,
-  SyncOfflineTokenSpentResult,
-} from '../models/types';
+import { createHmac } from 'crypto';
 
-export type WalletRow = {
-  onlineBalance: number;
-  offlineBalance: number;
-};
-
-const mapWalletRow = (row: Record<string, unknown>): WalletRow => ({
+const mapWalletRow = (row: Record<string, unknown>): WalletBalances => ({
+  userId: String(row.user_id),
   onlineBalance: Number(row.online_balance),
   offlineBalance: Number(row.offline_balance),
 });
 
-const mapOfflineTokenRow = (row: Record<string, unknown>): OfflineTokenRecord => ({
-  id: String(row.id),
-  ownerUserId: String(row.owner_user_id),
-  amount: Number(row.amount),
-  status: String(row.status) as OfflineTokenStatus,
-  signature: String(row.signature),
-  issuedAt: String(row.issued_at),
-  spentAt: row.spent_at ? String(row.spent_at) : null,
-  redeemedAt: row.redeemed_at ? String(row.redeemed_at) : null,
-});
-
-const buildSignaturePayload = (token: {
-  id: string;
-  ownerUserId: string;
-  amount: number;
-  issuedAt: string;
-}) => {
-  return [token.id, token.ownerUserId, token.amount.toFixed(2), token.issuedAt].join(':');
-};
-
-const createTokenSignature = (token: {
-  id: string;
-  ownerUserId: string;
-  amount: number;
-  issuedAt: string;
-}) => {
-  return createHmac('sha256', env.JWT_SECRET)
-    .update(buildSignaturePayload(token))
-    .digest('hex');
-};
-
-const signaturesMatch = (left: string, right: string) => {
-  const leftBuffer = Buffer.from(left, 'hex');
-  const rightBuffer = Buffer.from(right, 'hex');
-
-  if (leftBuffer.length !== rightBuffer.length) {
-    return false;
-  }
-
-  return timingSafeEqual(leftBuffer, rightBuffer);
-};
-
 export class WalletRepository {
-  async findByUserId(userId: string): Promise<WalletRow | null> {
+  async findByUserId(userId: string): Promise<WalletBalances | null> {
     const result = await pool.query(
       `
-        SELECT online_balance, offline_balance
+        SELECT user_id, online_balance, offline_balance
         FROM wallets
         WHERE user_id = $1
       `,
@@ -80,79 +28,123 @@ export class WalletRepository {
     return mapWalletRow(result.rows[0]);
   }
 
-  async mintOfflineTokens(params: {
-    userId: string;
-    amount: number;
-  }): Promise<MintOfflineTokensResult> {
+  private base64Url(input: Buffer) {
+    return input.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+
+  private signTokenPayload(id: string, ownerUserId: string, amount: number, issuedAt: string) {
+    const hmac = createHmac('sha256', env.JWT_SECRET);
+    hmac.update([id, ownerUserId, amount.toString(), issuedAt].join('|'));
+    return this.base64Url(hmac.digest());
+  }
+
+  async mintOfflineToken(userId: string, amount: number): Promise<{ wallet: WalletBalances; token: OfflineTokenRecord }> {
     const client = await pool.connect();
 
     try {
       await client.query('BEGIN');
+      await client.query(`SELECT user_id FROM wallets WHERE user_id = $1 FOR UPDATE`, [userId]);
 
-      const walletResult = await client.query(
-        `
-          SELECT online_balance, offline_balance
-          FROM wallets
-          WHERE user_id = $1
-          FOR UPDATE
-        `,
-        [params.userId],
+      const wRes = await client.query(
+        `SELECT user_id, online_balance, offline_balance FROM wallets WHERE user_id = $1 FOR UPDATE`,
+        [userId],
+      );
+      if (wRes.rowCount === 0) throw new Error('Wallet not found');
+      const onlineBalance = Number(wRes.rows[0].online_balance);
+      if (onlineBalance < amount) throw new Error('Insufficient online balance');
+
+      await client.query(`UPDATE wallets SET online_balance = online_balance - $2, offline_balance = offline_balance + $2, updated_at = NOW() WHERE user_id = $1`, [userId, amount]);
+
+      const insertRes = await client.query(
+        `INSERT INTO offline_tokens (id, owner_user_id, amount, status, signature, issued_at) VALUES (gen_random_uuid(), $1, $2, 'ISSUED', $3, NOW()) RETURNING *`,
+        [userId, amount, ''],
       );
 
-      if (walletResult.rowCount === 0) {
-        throw new Error('Wallet not found');
-      }
+      // compute signature using returned id and issued_at
+      const tokenRow = insertRes.rows[0];
+      const id = String(tokenRow.id);
+      const issuedAt = tokenRow.issued_at.toISOString();
+      const signature = this.signTokenPayload(id, userId, amount, issuedAt);
 
-      const wallet = mapWalletRow(walletResult.rows[0]);
-      if (wallet.onlineBalance < params.amount) {
-        throw new Error('Insufficient online balance to mint offline tokens');
-      }
+      await client.query(`UPDATE offline_tokens SET signature = $2 WHERE id = $1`, [id, signature]);
 
-      const updatedWalletResult = await client.query(
-        `
-          UPDATE wallets
-          SET
-            online_balance = online_balance - $2,
-            offline_balance = offline_balance + $2,
-            updated_at = NOW()
-          WHERE user_id = $1
-          RETURNING online_balance, offline_balance
-        `,
-        [params.userId, params.amount],
-      );
-
-      const tokenInsertResult = await client.query(
-        `
-          INSERT INTO offline_tokens (owner_user_id, amount, status, signature)
-          VALUES ($1, $2, 'ISSUED', 'PENDING_SIGNATURE')
-          RETURNING id, amount, status, signature, issued_at
-        `,
-        [params.userId, params.amount],
-      );
-
-      const insertedToken = tokenInsertResult.rows[0] as Record<string, unknown>;
-      const signature = createTokenSignature({
-        id: String(insertedToken.id),
-        ownerUserId: params.userId,
-        amount: Number(insertedToken.amount),
-        issuedAt: String(insertedToken.issued_at),
-      });
-
-      const tokenUpdateResult = await client.query(
-        `
-          UPDATE offline_tokens
-          SET signature = $2
-          WHERE id = $1
-          RETURNING id, owner_user_id, amount, status, signature, issued_at, spent_at, redeemed_at
-        `,
-        [insertedToken.id, signature],
-      );
+      const updatedWalletRes = await client.query(`SELECT user_id, online_balance, offline_balance FROM wallets WHERE user_id = $1`, [userId]);
 
       await client.query('COMMIT');
 
+      const wallet: WalletBalances = {
+        userId: String(updatedWalletRes.rows[0].user_id),
+        onlineBalance: Number(updatedWalletRes.rows[0].online_balance),
+        offlineBalance: Number(updatedWalletRes.rows[0].offline_balance),
+      };
+
+      const token: OfflineTokenRecord = {
+        id,
+        ownerUserId: userId,
+        amount: Number(amount),
+        status: 'ISSUED',
+        signature,
+        issuedAt,
+        spentAt: null,
+        redeemedAt: null,
+      };
+
+      return { wallet, token };
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async listOfflineTokens(userId: string, status?: string): Promise<OfflineTokenRecord[]> {
+    const params: any[] = [userId];
+    let q = `SELECT id, owner_user_id, amount, status, signature, issued_at, spent_at, redeemed_at FROM offline_tokens WHERE owner_user_id = $1`;
+    if (status) {
+      params.push(status);
+      q += ` AND status = $2`;
+    }
+    q += ` ORDER BY issued_at DESC`;
+
+    const res = await pool.query(q, params);
+    return res.rows.map((row) => ({
+      id: String(row.id),
+      ownerUserId: String(row.owner_user_id),
+      amount: Number(row.amount),
+      status: String(row.status) as OfflineTokenRecord['status'],
+      signature: String(row.signature),
+      issuedAt: row.issued_at ? new Date(String(row.issued_at)).toISOString() : '',
+      spentAt: row.spent_at ? new Date(String(row.spent_at)).toISOString() : null,
+      redeemedAt: row.redeemed_at ? new Date(String(row.redeemed_at)).toISOString() : null,
+    }));
+  }
+
+  async syncOfflineTokenSpent(userId: string, tokenId: string): Promise<OfflineTokenRecord> {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const tokenRes = await client.query(`SELECT id, owner_user_id, amount, status, signature, issued_at, spent_at, redeemed_at FROM offline_tokens WHERE id = $1 FOR UPDATE`, [tokenId]);
+      if (tokenRes.rowCount === 0) throw new Error('Token not found');
+      const token = tokenRes.rows[0];
+      if (String(token.owner_user_id) !== userId) throw new Error('Not token owner');
+      if (String(token.status) !== 'ISSUED') throw new Error('Token not in ISSUED state');
+
+      await client.query(`UPDATE offline_tokens SET status = 'SPENT', spent_at = NOW() WHERE id = $1`, [tokenId]);
+
+      const updated = await client.query(`SELECT id, owner_user_id, amount, status, signature, issued_at, spent_at, redeemed_at FROM offline_tokens WHERE id = $1`, [tokenId]);
+      await client.query('COMMIT');
+
+      const row = updated.rows[0];
       return {
-        wallet: mapWalletRow(updatedWalletResult.rows[0]),
-        tokens: tokenUpdateResult.rows.map((row) => mapOfflineTokenRow(row)),
+        id: String(row.id),
+        ownerUserId: String(row.owner_user_id),
+        amount: Number(row.amount),
+        status: String(row.status) as OfflineTokenRecord['status'],
+        signature: String(row.signature),
+        issuedAt: row.issued_at ? new Date(String(row.issued_at)).toISOString() : '',
+        spentAt: row.spent_at ? new Date(String(row.spent_at)).toISOString() : null,
+        redeemedAt: row.redeemed_at ? new Date(String(row.redeemed_at)).toISOString() : null,
       };
     } catch (error) {
       await client.query('ROLLBACK');
@@ -162,170 +154,60 @@ export class WalletRepository {
     }
   }
 
-  async listOfflineTokens(params: {
-    userId: string;
-    status?: OfflineTokenStatus;
-  }): Promise<OfflineTokenRecord[]> {
-    const result = params.status
-      ? await pool.query(
-          `
-            SELECT id, owner_user_id, amount, status, signature, issued_at, spent_at, redeemed_at
-            FROM offline_tokens
-            WHERE owner_user_id = $1 AND status = $2
-            ORDER BY issued_at DESC
-          `,
-          [params.userId, params.status],
-        )
-      : await pool.query(
-          `
-            SELECT id, owner_user_id, amount, status, signature, issued_at, spent_at, redeemed_at
-            FROM offline_tokens
-            WHERE owner_user_id = $1
-            ORDER BY issued_at DESC
-          `,
-          [params.userId],
-        );
-
-    return result.rows.map((row) => mapOfflineTokenRow(row));
-  }
-
-  async syncOfflineTokenSpent(params: {
-    userId: string;
-    tokenId: string;
-  }): Promise<SyncOfflineTokenSpentResult> {
-    const result = await pool.query(
-      `
-        UPDATE offline_tokens
-        SET status = 'SPENT', spent_at = NOW()
-        WHERE id = $1 AND owner_user_id = $2 AND status = 'ISSUED'
-        RETURNING id, owner_user_id, amount, status, signature, issued_at, spent_at, redeemed_at
-      `,
-      [params.tokenId, params.userId],
-    );
-
-    if (result.rowCount === 0) {
-      throw new Error('Token is not available for spent sync');
-    }
-
-    return {
-      token: mapOfflineTokenRow(result.rows[0]),
-    };
-  }
-
-  async redeemOfflineToken(params: {
-    receiverUserId: string;
-    token: RedeemOfflineTokenPayload;
-  }): Promise<RedeemOfflineTokenResult> {
+  async redeemOfflineToken(currentUserId: string, tokenPayload: { id: string; ownerUserId: string; amount: number; signature: string; issuedAt: string; }) {
     const client = await pool.connect();
-
     try {
       await client.query('BEGIN');
 
-      const tokenResult = await client.query(
-        `
-          SELECT id, owner_user_id, amount, status, signature, issued_at, spent_at, redeemed_at
-          FROM offline_tokens
-          WHERE id = $1
-          FOR UPDATE
-        `,
-        [params.token.id],
+      const tokenRes = await client.query(`SELECT id, owner_user_id, amount, status, signature, issued_at, spent_at, redeemed_at FROM offline_tokens WHERE id = $1 FOR UPDATE`, [tokenPayload.id]);
+      if (tokenRes.rowCount === 0) throw new Error('Token not found');
+      const tokenRow = tokenRes.rows[0];
+      if (String(tokenRow.owner_user_id) !== tokenPayload.ownerUserId) throw new Error('Owner mismatch');
+      if (String(tokenRow.signature) !== tokenPayload.signature) throw new Error('Invalid signature');
+      if (String(tokenRow.status) === 'REDEEMED' || String(tokenRow.status) === 'REVOKED') throw new Error('Token cannot be redeemed');
+
+      // lock wallets
+      await this.lockWallets(client, [tokenPayload.ownerUserId, currentUserId]);
+
+      const ownerWallet = await this.getWalletForUpdate(client, tokenPayload.ownerUserId);
+      if (!ownerWallet || ownerWallet.offlineBalance < tokenPayload.amount) throw new Error('Insufficient offline balance for owner');
+
+      await client.query(`UPDATE wallets SET offline_balance = offline_balance - $2, updated_at = NOW() WHERE user_id = $1`, [tokenPayload.ownerUserId, tokenPayload.amount]);
+      await client.query(`UPDATE wallets SET online_balance = online_balance + $2, updated_at = NOW() WHERE user_id = $1`, [currentUserId, tokenPayload.amount]);
+
+      await client.query(`UPDATE offline_tokens SET status = 'REDEEMED', redeemed_at = NOW() WHERE id = $1`, [tokenPayload.id]);
+
+      const txInsert = await client.query(
+        `INSERT INTO transactions (id, from_user_id, to_user_id, amount, currency, type, status) VALUES (gen_random_uuid(), $1, $2, $3, 'INR', 'OFFLINE', 'CONFIRMED') RETURNING *`,
+        [tokenPayload.ownerUserId, currentUserId, tokenPayload.amount],
       );
 
-      if (tokenResult.rowCount === 0) {
-        throw new Error('Offline token not found');
-      }
-
-      const dbToken = mapOfflineTokenRow(tokenResult.rows[0]);
-      if (dbToken.ownerUserId !== params.token.ownerUserId) {
-        throw new Error('Token owner mismatch');
-      }
-
-      if (dbToken.amount !== params.token.amount) {
-        throw new Error('Token amount mismatch');
-      }
-
-      if (dbToken.issuedAt !== params.token.issuedAt) {
-        throw new Error('Token issuedAt mismatch');
-      }
-
-      if (dbToken.ownerUserId === params.receiverUserId) {
-        throw new Error('Cannot redeem your own offline token');
-      }
-
-      const expectedSignature = createTokenSignature({
-        id: dbToken.id,
-        ownerUserId: dbToken.ownerUserId,
-        amount: dbToken.amount,
-        issuedAt: dbToken.issuedAt,
-      });
-
-      const dbSignatureValid = signaturesMatch(dbToken.signature, expectedSignature);
-      const payloadSignatureValid = signaturesMatch(params.token.signature, expectedSignature);
-      if (!dbSignatureValid || !payloadSignatureValid) {
-        throw new Error('Offline token signature verification failed');
-      }
-
-      if (dbToken.status === 'REDEEMED') {
-        throw new Error('Offline token already redeemed');
-      }
-
-      if (dbToken.status === 'REVOKED') {
-        throw new Error('Offline token revoked');
-      }
-
-      if (dbToken.status !== 'ISSUED' && dbToken.status !== 'SPENT') {
-        throw new Error('Offline token cannot be redeemed from its current status');
-      }
-
-      const receiverWalletResult = await client.query(
-        `
-          UPDATE wallets
-          SET online_balance = online_balance + $2, updated_at = NOW()
-          WHERE user_id = $1
-          RETURNING online_balance, offline_balance
-        `,
-        [params.receiverUserId, dbToken.amount],
-      );
-
-      if (receiverWalletResult.rowCount === 0) {
-        throw new Error('Receiver wallet not found');
-      }
-
-      const redeemResult = await client.query(
-        `
-          UPDATE offline_tokens
-          SET status = 'REDEEMED', redeemed_at = NOW()
-          WHERE id = $1
-          RETURNING id, owner_user_id, amount, status, signature, issued_at, spent_at, redeemed_at
-        `,
-        [dbToken.id],
-      );
-
-      const transactionResult = await client.query(
-        `
-          INSERT INTO transactions (
-            sender_user_id,
-            receiver_user_id,
-            amount,
-            status,
-            signature,
-            server_timestamp
-          )
-          VALUES ($1, $2, $3, 'CONFIRMED', $4, NOW())
-          RETURNING id, status
-        `,
-        [dbToken.ownerUserId, params.receiverUserId, dbToken.amount, dbToken.signature],
-      );
+      const updatedWalletRes = await client.query(`SELECT user_id, online_balance, offline_balance FROM wallets WHERE user_id = $1`, [currentUserId]);
 
       await client.query('COMMIT');
 
+      const wallet: WalletBalances = {
+        userId: String(updatedWalletRes.rows[0].user_id),
+        onlineBalance: Number(updatedWalletRes.rows[0].online_balance),
+        offlineBalance: Number(updatedWalletRes.rows[0].offline_balance),
+      };
+
+      const updatedToken = await pool.query(`SELECT id, owner_user_id, amount, status, signature, issued_at, spent_at, redeemed_at FROM offline_tokens WHERE id = $1`, [tokenPayload.id]);
+      const row = updatedToken.rows[0];
+
       return {
-        wallet: mapWalletRow(receiverWalletResult.rows[0]),
-        token: mapOfflineTokenRow(redeemResult.rows[0]),
-        transaction: {
-          id: String(transactionResult.rows[0].id),
-          status: String(transactionResult.rows[0].status),
+        wallet,
+        token: {
+          id: String(row.id),
+          ownerUserId: String(row.owner_user_id),
+          amount: Number(row.amount),
+          status: String(row.status) as OfflineTokenRecord['status'],
+          signature: String(row.signature),
+          issuedAt: row.issued_at ? new Date(String(row.issued_at)).toISOString() : '',
+          spentAt: row.spent_at ? new Date(String(row.spent_at)).toISOString() : null,
+          redeemedAt: row.redeemed_at ? new Date(String(row.redeemed_at)).toISOString() : null,
         },
+        transaction: txInsert.rows[0],
       };
     } catch (error) {
       await client.query('ROLLBACK');
@@ -333,5 +215,24 @@ export class WalletRepository {
     } finally {
       client.release();
     }
+  }
+
+  private async lockWallets(client: PoolClient, userIds: string[]) {
+    const uniqueOrderedUserIds = [...new Set(userIds)].sort();
+    for (const userId of uniqueOrderedUserIds) {
+      await client.query(`SELECT user_id FROM wallets WHERE user_id = $1 FOR UPDATE`, [userId]);
+    }
+  }
+
+  private async getWalletForUpdate(client: PoolClient, userId: string) {
+    const result = await client.query(`SELECT user_id, online_balance, offline_balance FROM wallets WHERE user_id = $1 FOR UPDATE`, [userId]);
+    if (result.rowCount === 0) {
+      return null;
+    }
+    return {
+      userId: String(result.rows[0].user_id),
+      onlineBalance: Number(result.rows[0].online_balance),
+      offlineBalance: Number(result.rows[0].offline_balance),
+    };
   }
 }

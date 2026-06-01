@@ -3,7 +3,7 @@ import { env } from '../config/env';
 
 export type AuthTokenPayload = {
   sub: string;
-  email: string;
+  phone: string;
 };
 
 export const signAuthToken = (payload: AuthTokenPayload) => {

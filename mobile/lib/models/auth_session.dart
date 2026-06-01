@@ -2,14 +2,14 @@ class AuthSession {
   const AuthSession({
     required this.userId,
     required this.name,
-    required this.email,
+    required this.phone,
     required this.publicKey,
     required this.token,
   });
 
   final String userId;
   final String name;
-  final String email;
+  final String phone;
   final String publicKey;
   final String token;
 
@@ -18,7 +18,7 @@ class AuthSession {
     return AuthSession(
       userId: (user['id'] ?? '').toString(),
       name: (user['name'] ?? '').toString(),
-      email: (user['email'] ?? '').toString(),
+      phone: (user['phone'] ?? user['email'] ?? '').toString(),
       publicKey: (user['publicKey'] ?? '').toString(),
       token: (map['token'] ?? '').toString(),
     );
@@ -28,7 +28,7 @@ class AuthSession {
     return AuthSession(
       userId: map['user_id'] as String,
       name: map['name'] as String,
-      email: map['email'] as String,
+      phone: map['phone'] as String,
       publicKey: map['public_key'] as String,
       token: map['token'] as String,
     );
@@ -39,7 +39,7 @@ class AuthSession {
       'id': 1,
       'user_id': userId,
       'name': name,
-      'email': email,
+      'phone': phone,
       'public_key': publicKey,
       'token': token,
     };

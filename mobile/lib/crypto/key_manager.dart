@@ -1,9 +1,7 @@
 import 'dart:convert';
-import 'dart:math';
-import 'dart:typed_data';
 
+import 'package:cryptography/cryptography.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
-import 'package:pointycastle/export.dart';
 
 class LocalKeyPair {
   const LocalKeyPair({
@@ -16,41 +14,44 @@ class LocalKeyPair {
 }
 
 class KeyManager {
-  KeyManager() : _storage = const FlutterSecureStorage();
+  KeyManager({
+    FlutterSecureStorage? storage,
+    Ed25519? algorithm,
+  })  : _storage = storage ?? const FlutterSecureStorage(),
+        _algorithm = algorithm ?? Ed25519();
 
-  static const _publicKeyField = 'offline_wallet_public_key';
-  static const _privateKeyField = 'offline_wallet_private_key';
+  static const publicKeyField = 'offline_public_key';
+  static const privateKeyField = 'offline_private_key';
 
   final FlutterSecureStorage _storage;
+  final Ed25519 _algorithm;
 
   Future<LocalKeyPair> ensureKeyPair() async {
-    final existingPublic = await _storage.read(key: _publicKeyField);
-    final existingPrivate = await _storage.read(key: _privateKeyField);
+    final existingPublic = await _storage.read(key: publicKeyField);
+    final existingPrivate = await _storage.read(key: privateKeyField);
 
     if (existingPublic != null && existingPrivate != null) {
-      return LocalKeyPair(publicKey: existingPublic, privateKey: existingPrivate);
+      return LocalKeyPair(
+          publicKey: existingPublic, privateKey: existingPrivate);
     }
 
-    final random = Random.secure();
-    final seed = Uint8List.fromList(
-      List<int>.generate(32, (_) => random.nextInt(256)),
+    final keyPair = await _algorithm.newKeyPair();
+    final publicKey = await keyPair.extractPublicKey();
+    final privateKeyBytes = await keyPair.extractPrivateKeyBytes();
+
+    final encodedPublic = base64UrlEncode(publicKey.bytes);
+    final encodedPrivate = base64UrlEncode(privateKeyBytes);
+
+    await _storage.write(key: publicKeyField, value: encodedPublic);
+    await _storage.write(key: privateKeyField, value: encodedPrivate);
+
+    return LocalKeyPair(
+      publicKey: encodedPublic,
+      privateKey: encodedPrivate,
     );
-
-    final secureRandom = FortunaRandom()..seed(KeyParameter(seed));
-    final privateKey = base64UrlEncode(secureRandom.nextBytes(32));
-    final publicKey = base64UrlEncode(secureRandom.nextBytes(32));
-
-    await _storage.write(key: _publicKeyField, value: publicKey);
-    await _storage.write(key: _privateKeyField, value: privateKey);
-
-    return LocalKeyPair(publicKey: publicKey, privateKey: privateKey);
   }
 
-  Future<String?> getPublicKey() {
-    return _storage.read(key: _publicKeyField);
-  }
+  Future<String?> getPublicKey() => _storage.read(key: publicKeyField);
 
-  Future<String?> getPrivateKey() {
-    return _storage.read(key: _privateKeyField);
-  }
+  Future<String?> getPrivateKey() => _storage.read(key: privateKeyField);
 }

@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../utils/money.dart';
+
 class BalanceCard extends StatelessWidget {
   const BalanceCard({
     super.key,
@@ -10,7 +12,7 @@ class BalanceCard extends StatelessWidget {
   });
 
   final String title;
-  final double amount;
+  final int amount;
   final Color color;
   final String subtitle;
 
@@ -32,7 +34,7 @@ class BalanceCard extends StatelessWidget {
           ),
           const SizedBox(height: 8),
           Text(
-            'Rs. ${amount.toStringAsFixed(2)}',
+            formatPaise(amount),
             style: Theme.of(context).textTheme.headlineSmall?.copyWith(
                   color: color,
                   fontWeight: FontWeight.w700,

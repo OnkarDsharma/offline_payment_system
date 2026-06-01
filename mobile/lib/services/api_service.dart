@@ -5,6 +5,50 @@ import '../models/offline_token.dart';
 import '../models/transaction.dart';
 import '../models/wallet.dart';
 
+class SyncResult {
+  const SyncResult({
+    required this.transactionId,
+    required this.status,
+    this.rejectionReason,
+  });
+
+  final String transactionId;
+  final String status;
+  final String? rejectionReason;
+
+  factory SyncResult.fromApiMap(Map<String, dynamic> map) {
+    return SyncResult(
+      transactionId: (map['transaction_id'] ?? '').toString(),
+      status: (map['status'] ?? '').toString(),
+      rejectionReason: map['rejection_reason']?.toString(),
+    );
+  }
+}
+
+class SyncTransactionsResponse {
+  const SyncTransactionsResponse({
+    required this.results,
+    required this.updatedBalances,
+  });
+
+  final List<SyncResult> results;
+  final Wallet updatedBalances;
+
+  factory SyncTransactionsResponse.fromApiMap(Map<String, dynamic> map) {
+    final results = (map['results'] as List<dynamic>? ?? const [])
+        .whereType<Map<String, dynamic>>()
+        .map(SyncResult.fromApiMap)
+        .toList();
+
+    return SyncTransactionsResponse(
+      results: results,
+      updatedBalances: Wallet.fromApiMap(
+        (map['updated_balances'] as Map<String, dynamic>? ?? const {}),
+      ),
+    );
+  }
+}
+
 class MintOfflineTokensResponse {
   const MintOfflineTokensResponse({
     required this.wallet,
@@ -36,7 +80,9 @@ class SyncOfflineTokenSpentResponse {
 
   factory SyncOfflineTokenSpentResponse.fromApiMap(Map<String, dynamic> map) {
     final tokenMap = (map['token'] as Map<String, dynamic>? ?? const {});
-    return SyncOfflineTokenSpentResponse(token: OfflineToken.fromApiMap(tokenMap));
+    return SyncOfflineTokenSpentResponse(
+      token: OfflineToken.fromApiMap(tokenMap),
+    );
   }
 }
 
@@ -82,6 +128,21 @@ class ApiService {
 
   final Dio _dio;
 
+  Future<bool> isBackendReachable() async {
+    try {
+      final response = await _dio.get<Map<String, dynamic>>(
+        '/health',
+        options: Options(
+          sendTimeout: const Duration(seconds: 3),
+          receiveTimeout: const Duration(seconds: 3),
+        ),
+      );
+      return response.statusCode == 200;
+    } catch (_) {
+      return false;
+    }
+  }
+
   Future<AuthSession> createDemoSession({
     required String deviceId,
     required String name,
@@ -101,17 +162,15 @@ class ApiService {
 
   Future<AuthSession> register({
     required String name,
-    required String email,
+    required String phone,
     required String password,
-    required String publicKey,
   }) async {
     final response = await _dio.post<Map<String, dynamic>>(
       '/auth/register',
       data: {
         'name': name,
-        'email': email,
+        'phone': phone,
         'password': password,
-        'publicKey': publicKey,
       },
     );
 
@@ -119,13 +178,13 @@ class ApiService {
   }
 
   Future<AuthSession> login({
-    required String email,
+    required String phone,
     required String password,
   }) async {
     final response = await _dio.post<Map<String, dynamic>>(
       '/auth/login',
       data: {
-        'email': email,
+        'phone': phone,
         'password': password,
       },
     );
@@ -133,17 +192,34 @@ class ApiService {
     return AuthSession.fromApiMap(response.data ?? const {});
   }
 
-  Future<Wallet> fetchWallet({required String token}) async {
-    final response = await _dio.get<Map<String, dynamic>>(
-      '/wallet',
+  Future<void> registerKey({
+    required String token,
+    required String publicKey,
+  }) async {
+    await _dio.post<void>(
+      '/auth/register-key',
+      data: {'public_key': publicKey},
       options: Options(
-        headers: {
-          'Authorization': 'Bearer $token',
-        },
+        headers: {'Authorization': 'Bearer $token'},
+      ),
+    );
+  }
+
+  Future<Wallet> fetchWallet({
+    required String token,
+    required String userId,
+  }) async {
+    final response = await _dio.get<Map<String, dynamic>>(
+      '/wallet/balance',
+      options: Options(
+        headers: {'Authorization': 'Bearer $token'},
       ),
     );
 
-    return Wallet.fromApiMap(response.data ?? const {});
+    return Wallet.fromApiMap({
+      'user_id': userId,
+      ...(response.data ?? const {}),
+    });
   }
 
   Future<MintOfflineTokensResponse> mintOfflineTokens({
@@ -226,10 +302,54 @@ class ApiService {
     return RedeemOfflineTokenResponse.fromApiMap(response.data ?? const {});
   }
 
+  Future<SyncTransactionsResponse> syncTransactions({
+    required String token,
+    required List<WalletTransaction> transactions,
+    required String userId,
+  }) async {
+    final response = await _dio.post<Map<String, dynamic>>(
+      '/sync',
+      data: {
+        'transactions':
+            transactions.map((transaction) => transaction.toJson()).toList(),
+      },
+      options: Options(
+        headers: {'Authorization': 'Bearer $token'},
+      ),
+    );
+
+    return SyncTransactionsResponse.fromApiMap({
+      ...?response.data,
+      'updated_balances': {
+        'user_id': userId,
+        ...((response.data?['updated_balances'] as Map<String, dynamic>?) ??
+            const {}),
+      },
+    });
+  }
+
+  Future<List<WalletTransaction>> fetchTransactions({
+    required String token,
+  }) async {
+    final response = await _dio.get<Map<String, dynamic>>(
+      '/transactions',
+      options: Options(
+        headers: {'Authorization': 'Bearer $token'},
+      ),
+    );
+
+    final items =
+        (response.data?['transactions'] as List<dynamic>? ?? const []);
+    return items
+        .whereType<Map<String, dynamic>>()
+        .map(WalletTransaction.fromApiMap)
+        .toList();
+  }
+
   Future<WalletTransaction> createTransfer({
     required String token,
     required String receiverUserId,
-    required double amount,
+    required int amount,
   }) async {
     final response = await _dio.post<Map<String, dynamic>>(
       '/transactions',
@@ -245,22 +365,5 @@ class ApiService {
     );
 
     return WalletTransaction.fromApiMap(response.data ?? const {});
-  }
-
-  Future<List<WalletTransaction>> fetchTransactions({required String token}) async {
-    final response = await _dio.get<Map<String, dynamic>>(
-      '/transactions',
-      options: Options(
-        headers: {
-          'Authorization': 'Bearer $token',
-        },
-      ),
-    );
-
-    final items = (response.data?['transactions'] as List<dynamic>? ?? const []);
-    return items
-        .whereType<Map<String, dynamic>>()
-        .map(WalletTransaction.fromApiMap)
-        .toList();
   }
 }

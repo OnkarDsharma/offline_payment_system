@@ -92,13 +92,15 @@ class PrototypeWalletController extends StateNotifier<PrototypeState> {
     var walletName = await _storage.read(key: _walletNameKey);
     final savedBalance = await _storage.read(key: _walletBalanceKey);
 
-    walletId ??= 'wallet_${DateTime.now().millisecondsSinceEpoch}_${Random().nextInt(9999)}';
+    walletId ??=
+        'wallet_${DateTime.now().millisecondsSinceEpoch}_${Random().nextInt(9999)}';
     walletName ??= 'My Wallet';
     final balance = double.tryParse(savedBalance ?? '') ?? 5000;
 
     await _storage.write(key: _walletIdKey, value: walletId);
     await _storage.write(key: _walletNameKey, value: walletName);
-    await _storage.write(key: _walletBalanceKey, value: balance.toStringAsFixed(2));
+    await _storage.write(
+        key: _walletBalanceKey, value: balance.toStringAsFixed(2));
 
     state = state.copyWith(
       wallet: PrototypeWallet(id: walletId, name: walletName, balance: balance),
@@ -151,15 +153,18 @@ class PrototypeWalletController extends StateNotifier<PrototypeState> {
     try {
       final parsed = jsonDecode(requestPayload) as Map<String, dynamic>;
       final receiverWalletId = (parsed['receiverWalletId'] ?? '').toString();
-      final receiverWalletName = (parsed['receiverWalletName'] ?? 'Receiver Wallet').toString();
+      final receiverWalletName =
+          (parsed['receiverWalletName'] ?? 'Receiver Wallet').toString();
       final amount = (parsed['amount'] as num?)?.toDouble() ?? 0;
 
       if (receiverWalletId.isEmpty || amount <= 0) {
-        return const OutgoingPaymentResult(message: 'Invalid payment request QR payload.');
+        return const OutgoingPaymentResult(
+            message: 'Invalid payment request QR payload.');
       }
 
       if (receiverWalletId == state.wallet.id) {
-        return const OutgoingPaymentResult(message: 'Cannot pay your own wallet from the same device.');
+        return const OutgoingPaymentResult(
+            message: 'Cannot pay your own wallet from the same device.');
       }
 
       if (state.wallet.balance < amount) {
@@ -169,7 +174,8 @@ class PrototypeWalletController extends StateNotifier<PrototypeState> {
       }
 
       final txId = 'tx_${DateTime.now().microsecondsSinceEpoch}';
-      final updatedWallet = state.wallet.copyWith(balance: state.wallet.balance - amount);
+      final updatedWallet =
+          state.wallet.copyWith(balance: state.wallet.balance - amount);
       await _persistWallet(updatedWallet);
 
       final tx = WalletTransaction(
@@ -204,20 +210,26 @@ class PrototypeWalletController extends StateNotifier<PrototypeState> {
         confirmationPayload: confirmationPayload,
       );
     } catch (_) {
-      return const OutgoingPaymentResult(message: 'Failed to parse request QR payload.');
+      return const OutgoingPaymentResult(
+          message: 'Failed to parse request QR payload.');
     }
   }
 
-  Future<String> applyIncomingConfirmation({required String confirmationPayload}) async {
+  Future<String> applyIncomingConfirmation(
+      {required String confirmationPayload}) async {
     try {
       final parsed = jsonDecode(confirmationPayload) as Map<String, dynamic>;
       final txId = (parsed['txId'] ?? '').toString();
       final senderWalletId = (parsed['senderWalletId'] ?? '').toString();
-      final senderWalletName = (parsed['senderWalletName'] ?? 'Sender Wallet').toString();
+      final senderWalletName =
+          (parsed['senderWalletName'] ?? 'Sender Wallet').toString();
       final receiverWalletId = (parsed['receiverWalletId'] ?? '').toString();
       final amount = (parsed['amount'] as num?)?.toDouble() ?? 0;
 
-      if (txId.isEmpty || senderWalletId.isEmpty || receiverWalletId.isEmpty || amount <= 0) {
+      if (txId.isEmpty ||
+          senderWalletId.isEmpty ||
+          receiverWalletId.isEmpty ||
+          amount <= 0) {
         return 'Invalid payment confirmation QR payload.';
       }
 
@@ -230,7 +242,8 @@ class PrototypeWalletController extends StateNotifier<PrototypeState> {
         return 'This confirmation is already applied.';
       }
 
-      final updatedWallet = state.wallet.copyWith(balance: state.wallet.balance + amount);
+      final updatedWallet =
+          state.wallet.copyWith(balance: state.wallet.balance + amount);
       await _persistWallet(updatedWallet);
 
       final tx = WalletTransaction(

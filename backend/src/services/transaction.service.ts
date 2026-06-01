@@ -1,5 +1,5 @@
 import { UserRepository } from '../repositories/user.repository';
-import { TransactionRepository } from '../repositories/transaction.repository';
+import { OfflineSyncTransactionInput, TransactionRepository } from '../repositories/transaction.repository';
 
 export type CreateTransactionPayload = {
   senderUserId: string;
@@ -21,11 +21,17 @@ export class TransactionService {
     }
 
     const receiver = await this.userRepository.findById(payload.receiverUserId);
-
     if (!receiver) {
       throw new Error('Receiver user not found');
     }
 
-    return this.transactionRepository.createTransfer(payload);
+    return this.transactionRepository.createOnlineTransfer(payload);
+  }
+
+  async syncTransactions(params: {
+    currentUserId: string;
+    transactions: OfflineSyncTransactionInput[];
+  }) {
+    return this.transactionRepository.syncOfflineTransactions(params);
   }
 }

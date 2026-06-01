@@ -3,9 +3,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/transaction.dart';
 import 'auth_provider.dart';
 
-final transactionsProvider = StateProvider<List<WalletTransaction>>((ref) => const []);
+final transactionsProvider =
+    StateProvider<List<WalletTransaction>>((ref) => const []);
 
-final transactionsBootstrapProvider = FutureProvider<List<WalletTransaction>>((ref) async {
+final transactionsBootstrapProvider =
+    FutureProvider<List<WalletTransaction>>((ref) async {
   final db = ref.read(databaseHelperProvider);
   final cached = await db.getTransactions();
   ref.read(transactionsProvider.notifier).state = cached;
@@ -16,10 +18,13 @@ final transactionsBootstrapProvider = FutureProvider<List<WalletTransaction>>((r
   }
 
   try {
-    final remoteTransactions = await ref.read(apiServiceProvider).fetchTransactions(
-          token: session.token,
-        );
-    await db.replaceTransactions(remoteTransactions);
+    final remoteTransactions =
+        await ref.read(apiServiceProvider).fetchTransactions(
+              token: session.token,
+            );
+    for (final transaction in remoteTransactions) {
+      await db.upsertOfflineTransaction(transaction);
+    }
     ref.read(transactionsProvider.notifier).state = remoteTransactions;
   } catch (_) {
     // Keep cached transactions when backend fetch fails.

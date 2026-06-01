@@ -4,7 +4,7 @@ import { verifyAuthToken } from '../utils/jwt';
 export type AuthenticatedRequest = Request & {
   auth?: {
     userId: string;
-    email: string;
+    phone: string;
   };
 };
 
@@ -27,9 +27,10 @@ export const requireAuth = (
     const payload = verifyAuthToken(token);
     req.auth = {
       userId: payload.sub,
-      email: payload.email,
+      phone: payload.phone,
     };
-    return next();
+    next();
+    return;
   } catch (_error) {
     return res.status(401).json({
       message: 'Invalid or expired token',

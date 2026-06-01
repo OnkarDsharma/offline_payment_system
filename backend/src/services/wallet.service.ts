@@ -1,11 +1,4 @@
-import {
-  MintOfflineTokensResult,
-  OfflineTokenStatus,
-  RedeemOfflineTokenPayload,
-  RedeemOfflineTokenResult,
-  SyncOfflineTokenSpentResult,
-  WalletBalances,
-} from '../models/types';
+import { WalletBalances } from '../models/types';
 import { WalletRepository } from '../repositories/wallet.repository';
 
 export class WalletService {
@@ -13,47 +6,25 @@ export class WalletService {
 
   async getWallet(userId: string): Promise<WalletBalances> {
     const wallet = await this.walletRepository.findByUserId(userId);
-
     if (!wallet) {
       throw new Error('Wallet not found');
     }
-
     return wallet;
   }
 
-  async mintOfflineTokens(params: {
-    userId: string;
-    amount: number;
-  }): Promise<MintOfflineTokensResult> {
-    if (!Number.isFinite(params.amount) || params.amount <= 0) {
-      throw new Error('Amount must be greater than zero');
-    }
-
-    return this.walletRepository.mintOfflineTokens(params);
+  async mintOfflineTokens(userId: string, amount: number) {
+    return this.walletRepository.mintOfflineToken(userId, amount);
   }
 
-  async listOfflineTokens(params: {
-    userId: string;
-    status?: OfflineTokenStatus;
-  }) {
-    return this.walletRepository.listOfflineTokens(params);
+  async listOfflineTokens(userId: string, status?: string) {
+    return this.walletRepository.listOfflineTokens(userId, status);
   }
 
-  async syncOfflineTokenSpent(params: {
-    userId: string;
-    tokenId: string;
-  }): Promise<SyncOfflineTokenSpentResult> {
-    return this.walletRepository.syncOfflineTokenSpent(params);
+  async syncOfflineTokenSpent(userId: string, tokenId: string) {
+    return this.walletRepository.syncOfflineTokenSpent(userId, tokenId);
   }
 
-  async redeemOfflineToken(params: {
-    receiverUserId: string;
-    token: RedeemOfflineTokenPayload;
-  }): Promise<RedeemOfflineTokenResult> {
-    if (!Number.isFinite(params.token.amount) || params.token.amount <= 0) {
-      throw new Error('Offline token amount is invalid');
-    }
-
-    return this.walletRepository.redeemOfflineToken(params);
+  async redeemOfflineToken(currentUserId: string, tokenPayload: { id: string; ownerUserId: string; amount: number; signature: string; issuedAt: string; }) {
+    return this.walletRepository.redeemOfflineToken(currentUserId, tokenPayload);
   }
 }
